@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { Bar } from "react-chartjs-2";
 import {
   Chart as ChartJS,
@@ -9,524 +9,320 @@ import {
   Legend
 } from "chart.js";
 
-ChartJS.register(
-  CategoryScale,
-  LinearScale,
-  BarElement,
-  Tooltip,
-  Legend
-);
+import api from "../services/api";
+import useDashboardAuth from "../hooks/useDashboardAuth";
+import useToast from "../hooks/useToast";
+import useModal from "../hooks/useModal";
+import useFilterSort from "../hooks/useFilterSort";
+import Roles from "../constants/roles";
+import Statuses from "../constants/statuses";
+import { formatDate, formatDateTime } from "../utils/dateUtils";
+import { exportToCSV } from "../utils/csvUtils";
+
+import LoginForm from "../components/ui/LoginForm";
+import DashboardLayout from "../components/layout/DashboardLayout";
+import StatCard from "../components/ui/StatCard";
+import FilterBar from "../components/ui/FilterBar";
+import EmptyState from "../components/ui/EmptyState";
+import SkeletonLoader from "../components/ui/SkeletonLoader";
+import VisitRequestCard from "../components/ui/VisitRequestCard";
+import ToastContainer from "../components/ui/ToastContainer";
+import NotificationDrawer from "../components/ui/NotificationDrawer";
+
+// Register Chart.js at module scope — not inside the component to avoid re-registration on re-render
+ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend);
+
+const STATUS_FILTERS = [
+  { value: "all",      label: "All"      },
+  { value: Statuses.PENDING,   label: "Pending"  },
+  { value: Statuses.APPROVED,  label: "Approved" },
+  { value: Statuses.REJECTED,  label: "Rejected" },
+];
+
+const SORT_OPTIONS = [
+  { value: "newest",    label: "Newest first"  },
+  { value: "name",      label: "Visitor name"  },
+  { value: "status",    label: "Status"        },
+  { value: "visitDate", label: "Visit date"    },
+];
+
+const TABS = [
+  { value: "requests", label: "Requests" },
+  { value: "history",  label: "History"  },
+];
 
 export default function HostDashboard() {
-
-  const API_BASE = "http://localhost:5000/api";
-
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-
-  const [token, setToken] = useState("");
-  const [requests, setRequests] = useState([]);
-  const [msg, setMsg] = useState("");
-
-  const [filter, setFilter] = useState("all");
-  const [sortBy, setSortBy] = useState("newest");
-
+  const [requests,    setRequests]    = useState([]);
   const [loadingList, setLoadingList] = useState(false);
-  const [loadingId, setLoadingId] = useState(null);
+  const [loadingId,   setLoadingId]   = useState(null);
+  const [expandedId,  setExpandedId]  = useState(null);
+  const [tab,         setTab]         = useState("requests");
 
-  const [search, setSearch] = useState("");
-  const [expandedId, setExpandedId] = useState(null);
+  const drawer = useModal();
 
-  const [toasts, setToasts] = useState([]);
-  const [notifications, setNotifications] = useState([]);
-  const [showDrawer, setShowDrawer] = useState(false);
+  const {
+    email, setEmail, password, setPassword,
+    token, msg, setMsg, login, logout
+  } = useDashboardAuth(Roles.HOST, "hostToken", (tk) => loadRequests(tk));
 
-  const [tab, setTab] = useState("requests");
-
-  /* ================= AUTO RESTORE LOGIN ================= */
-  useEffect(() => {
-    const saved = localStorage.getItem("hostToken");
-    if (saved) {
-      setToken(saved);
-      loadRequests(saved);
-    }
-  }, []);
-
-  /* ================= LOGIN ================= */
-  async function login(e) {
-    e.preventDefault();
-    setMsg("");
-
-    try {
-      const res = await fetch(`${API_BASE}/auth/login`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password })
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        setMsg(data.message || "Login failed");
-        return;
-      }
-
-      setToken(data.token);
-      localStorage.setItem("hostToken", data.token);
-
-      setMsg("Login successful");
-      loadRequests(data.token);
-
-    } catch {
-      setMsg("Server error");
-    }
-  }
-
-  /* ================= LOGOUT ================= */
-  function logout() {
-    localStorage.removeItem("hostToken");
-    setToken("");
-    setRequests([]);
-    setMsg("Logged out successfully");
-  }
+  const {
+    toasts, notifications, pushToast: showToast
+  } = useToast();
 
   /* ================= LOAD REQUESTS ================= */
-  async function loadRequests(tk) {
+  // useCallback: prevents this from being recreated on every render,
+  // safe to pass as useDashboardAuth's onLoadData callback.
+  const loadRequests = useCallback(async (tk) => {
     try {
       setLoadingList(true);
-
-      const res = await fetch(
-        `${API_BASE}/visitor/host/my-requests`,
-        {
-          headers: {
-            Authorization: "Bearer " + tk
-          }
-        }
-      );
-
-      if (res.status === 401) {
-        logout();
+      // BUG FIX: Use /host/all-requests to get ALL statuses (not just pending)
+      // so the History tab shows approved requests.
+      const data = await api.get("/visitor/host/all-requests", { Authorization: "Bearer " + tk });
+      setRequests(Array.isArray(data) ? data : []);
+    } catch (err) {
+      if (err.message.includes("Token") || err.message.includes("denied")) {
+        logout(() => setRequests([]));
         return;
       }
-
-      const data = await res.json();
-
-      if (!res.ok || !Array.isArray(data)) {
-        setRequests([]);
-        return;
-      }
-
-      setRequests(data);
-
-    } catch {
       setRequests([]);
       setMsg("Could not load requests");
     } finally {
       setLoadingList(false);
     }
-  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /* ================= FILTER + SORT + SEARCH ================= */
+  const { filtered: filteredRequests, search, setSearch, filter, setFilter, sortBy, setSortBy } =
+    useFilterSort(requests, {
+      searchFields: ["visitor.name", "purpose"],
+      statusField: "status",
+      defaultSort: "newest",
+    });
+
+  /* ================= DERIVED DATA (memoized) ================= */
+  const { total, pendingCount, approvedCount, rejectedCount, historyRequests, chartData } =
+    useMemo(() => {
+      const pending  = requests.filter((r) => r.status === Statuses.PENDING).length;
+      const approved = requests.filter((r) => r.status === Statuses.APPROVED).length;
+      const rejected = requests.filter((r) => r.status === Statuses.REJECTED).length;
+      const history  = requests.filter((r) => r.status === Statuses.APPROVED);
+
+      return {
+        total: requests.length,
+        pendingCount:  pending,
+        approvedCount: approved,
+        rejectedCount: rejected,
+        historyRequests: history,
+        chartData: {
+          labels: ["Pending", "Approved", "Rejected"],
+          datasets: [{
+            label: "Requests",
+            data: [pending, approved, rejected],
+            backgroundColor: ["#f59e0b", "#7c3aed", "#ef4444"],
+          }],
+        },
+      };
+    }, [requests]);
 
   /* ================= APPROVE ================= */
   async function approve(id) {
-
     if (loadingId) return;
-
     try {
       setLoadingId(id);
-
-      const res = await fetch(
-        `${API_BASE}/visitor/approve/${id}`,
-        {
-          method: "PUT",
-          headers: { Authorization: "Bearer " + token }
-        }
-      );
-
-      if (res.status === 401) {
-        logout();
-        return;
-      }
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        showToast(data.message || "Error");
-        return;
-      }
-
+      const data = await api.put(`/visitor/approve/${id}`);
       showToast("Approved • " + data.passCode);
       await loadRequests(token);
-
-    } catch {
-      showToast("Server error");
+    } catch (err) {
+      if (err.message.includes("Token") || err.message.includes("denied")) {
+        logout(() => setRequests([]));
+        return;
+      }
+      showToast(err.message || "Server error", "error");
     } finally {
       setLoadingId(null);
     }
   }
 
-  /* ================= TOAST ================= */
-  function showToast(text) {
-    const id = Date.now();
-
-    setToasts((t) => [...t, { id, text }]);
-
-    setNotifications((n) => [
-      { id, text, time: new Date() },
-      ...n
-    ]);
-
-    setTimeout(() => {
-      setToasts((t) => t.filter((x) => x.id !== id));
-    }, 2500);
-  }
-  /* ================= FILTER + SEARCH + SORT ================= */
-  const filteredRequests = requests
-    .filter((r) => {
-
-      const matchStatus =
-        filter === "all" || r.status === filter;
-
-      const text =
-        `${r.visitor?.name || ""} ${r.purpose || ""}`.toLowerCase();
-
-      const matchSearch =
-        text.includes(search.toLowerCase());
-
-      return matchStatus && matchSearch;
-    })
-    .sort((a, b) => {
-
-      if (sortBy === "name") {
-        return (a.visitor?.name || "")
-          .localeCompare(b.visitor?.name || "");
-      }
-
-      if (sortBy === "status") {
-        return a.status.localeCompare(b.status);
-      }
-
-      if (sortBy === "visitDate") {
-        return new Date(a.visitDate || 0) - new Date(b.visitDate || 0);
-      }
-
-      return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
-    });
-
-  /* ================= HISTORY ================= */
-  const historyRequests =
-    requests.filter((r) => r.status === "approved");
-
-  const total = requests.length;
-  const pendingCount = requests.filter(r => r.status === "pending").length;
-  const approvedCount = requests.filter(r => r.status === "approved").length;
-  const rejectedCount = requests.filter(r => r.status === "rejected").length;
-
-  /* ================= CHART ================= */
-  const chartData = {
-    labels: ["Pending", "Approved", "Rejected"],
-    datasets: [
-      {
-        label: "Requests",
-        data: [pendingCount, approvedCount, rejectedCount],
-        backgroundColor: ["#f59e0b", "#7c3aed", "#ef4444"]
-      }
-    ]
-  };
-
   /* ================= EXPORT CSV ================= */
-  function exportCSV() {
-
-    if (filteredRequests.length === 0) return;
-
-    const headers = [
-      "Visitor",
-      "Purpose",
-      "Status",
-      "VisitDate",
-      "CreatedAt",
-      "RequestId"
-    ];
-
-    const rows = filteredRequests.map((r) => [
-      r.visitor?.name || "",
-      r.purpose || "",
-      r.status,
-      r.visitDate || "",
-      r.createdAt || "",
-      r._id
-    ]);
-
-    const csv =
-      [headers, ...rows]
-        .map(row =>
-          row.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")
-        )
-        .join("\n");
-
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "host_requests.csv";
-    a.click();
-
-    URL.revokeObjectURL(url);
+  function handleExportCSV() {
+    exportToCSV(
+      ["Visitor", "Purpose", "Status", "VisitDate", "CreatedAt", "RequestId"],
+      filteredRequests.map((r) => [
+        r.visitor?.name || "",
+        r.purpose || "",
+        r.status,
+        formatDate(r.visitDate),
+        formatDateTime(r.createdAt),
+        r._id,
+      ]),
+      "host_requests.csv"
+    );
   }
 
   /* ================= UI ================= */
   return (
-    <div className="page">
-
-      <div style={{ display: "flex", alignItems: "center" }}>
-        <h4 style={{ margin: 0 }}>Host Dashboard</h4>
-        {token && (
-          <button
-            onClick={logout}
-            style={{ marginLeft: "auto" }}
-          >
-            Logout
-          </button>
+    <>
+      <DashboardLayout
+        title="Host Dashboard"
+        token={token}
+        onLogout={logout}
+        tabs={TABS}
+        activeTab={tab}
+        onTabChange={setTab}
+        onNotificationsClick={drawer.open}
+      >
+        {/* ---- Login Gate ---- */}
+        {!token && (
+          <LoginForm
+            title="Host Login"
+            formId="host-login"
+            email={email}
+            setEmail={setEmail}
+            password={password}
+            setPassword={setPassword}
+            onSubmit={login}
+            msg={msg}
+          />
         )}
-      </div>
 
-      {!token && (
-        <form onSubmit={login}>
-          <input
-            placeholder="Email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
+        {/* ---- Status message (after login) ---- */}
+        {token && msg && (
+          <p role="status" aria-live="polite">{msg}</p>
+        )}
 
-          <input
-            type="password"
-            placeholder="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
+        {/* ================= REQUESTS TAB ================= */}
+        {token && tab === "requests" && (
+          <section aria-label="Visitor requests">
+            <h4>My Visit Requests</h4>
 
-          <button type="submit">Login</button>
-        </form>
-      )}
-
-      <p>{msg}</p>
-
-      {token && (
-        <div>
-
-          {/* -------- tabs + notifications -------- */}
-          <div style={{ display: "flex", gap: "10px", marginBottom: "14px" }}>
-
-            <button
-              className={tab === "requests" ? "filter-btn active" : "filter-btn"}
-              onClick={() => setTab("requests")}
-            >
-              Requests
-            </button>
-
-            <button
-              className={tab === "history" ? "filter-btn active" : "filter-btn"}
-              onClick={() => setTab("history")}
-            >
-              History
-            </button>
-
-            <button
-              style={{ marginLeft: "auto" }}
-              onClick={() => setShowDrawer(true)}
-            >
-              🔔 Notifications
-            </button>
-
-          </div>
-
-          {/* ================= REQUESTS TAB ================= */}
-          {tab === "requests" && (
-            <>
-              <h4>My Visit Requests</h4>
-
-              <input
-                placeholder="Search by visitor or purpose..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                style={{ marginBottom: "10px", maxWidth: "320px" }}
-              />
-
-              <div style={{ display: "flex", gap: "10px", marginBottom: "14px" }}>
-                <select
-                  value={sortBy}
-                  onChange={(e) => setSortBy(e.target.value)}
-                >
-                  <option value="newest">Newest first</option>
-                  <option value="name">Visitor name</option>
-                  <option value="status">Status</option>
-                  <option value="visitDate">Visit date</option>
-                </select>
-
-                <button onClick={exportCSV}>Export CSV</button>
-              </div>
-
-              <div className="stats-row">
-                <div className="stat-card">
-                  <div className="stat-title">Total</div>
-                  <div className="stat-value">{total}</div>
-                </div>
-                <div className="stat-card">
-                  <div className="stat-title">Pending</div>
-                  <div className="stat-value">{pendingCount}</div>
-                </div>
-                <div className="stat-card">
-                  <div className="stat-title">Approved</div>
-                  <div className="stat-value">{approvedCount}</div>
-                </div>
-                <div className="stat-card">
-                  <div className="stat-title">Rejected</div>
-                  <div className="stat-value">{rejectedCount}</div>
-                </div>
-              </div>
-
-              <div className="card" style={{ marginBottom: "24px" }}>
-                <h4 style={{ marginBottom: "10px" }}>Requests overview</h4>
-                <Bar
-                  data={chartData}
-                  options={{
-                    responsive: true,
-                    plugins: { legend: { display: false } }
-                  }}
+            {/* Search + Sort + Export row */}
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+              <div>
+                <label htmlFor="host-search" className="sr-only">Search requests</label>
+                <input
+                  id="host-search"
+                  type="search"
+                  placeholder="Search by visitor or purpose…"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  style={{ maxWidth: 320 }}
+                  aria-label="Search requests by visitor name or purpose"
                 />
               </div>
 
-              <div className="filter-bar">
-                <button className={`filter-btn ${filter==="all"?"active":""}`} onClick={()=>setFilter("all")}>All</button>
-                <button className={`filter-btn ${filter==="pending"?"active":""}`} onClick={()=>setFilter("pending")}>Pending</button>
-                <button className={`filter-btn ${filter==="approved"?"active":""}`} onClick={()=>setFilter("approved")}>Approved</button>
-                <button className={`filter-btn ${filter==="rejected"?"active":""}`} onClick={()=>setFilter("rejected")}>Rejected</button>
+              <div>
+                <label htmlFor="host-sort" className="sr-only">Sort requests</label>
+                <select
+                  id="host-sort"
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value)}
+                  aria-label="Sort requests"
+                >
+                  {SORT_OPTIONS.map(({ value, label }) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
               </div>
 
-              {loadingList && (
-                <div className="cards">
-                  {[1,2,3,4].map(i => (
-                    <div key={i} className="skeleton"></div>
-                  ))}
-                </div>
-              )}
-
-              {!loadingList && filteredRequests.length === 0 && (
-                <div className="empty-state">📭 No visit requests found</div>
-              )}
-
-              {!loadingList && filteredRequests.length > 0 && (
-                <div className="cards">
-                  {filteredRequests.map((r) => (
-
-                    <div
-                      key={r._id}
-                      className={`card ${expandedId === r._id ? "expanded" : ""}`}
-                      onClick={() =>
-                        setExpandedId(expandedId === r._id ? null : r._id)
-                      }
-                    >
-
-                      <p><b>Visitor:</b> {r.visitor?.name}</p>
-                      <p><b>Purpose:</b> {r.purpose}</p>
-
-                      <p>
-                        <b>Status:</b>{" "}
-                        <span className={`badge ${r.status}`}>
-                          {r.status.toUpperCase()}
-                        </span>
-                      </p>
-
-                      {r.status === "pending" && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            approve(r._id);
-                          }}
-                          className={loadingId === r._id ? "btn-loading" : ""}
-                          disabled={loadingId === r._id}
-                        >
-                          {loadingId === r._id ? "Approving" : "Approve"}
-                        </button>
-                      )}
-
-                      <div className="extra">
-                        <p><b>Request ID:</b> {r._id}</p>
-                        <p><b>Visit date:</b> {r.visitDate ? new Date(r.visitDate).toLocaleDateString() : "-"}</p>
-                        <p><b>Created:</b> {r.createdAt ? new Date(r.createdAt).toLocaleString() : "-"}</p>
-                      </div>
-
-                    </div>
-                  ))}
-                </div>
-              )}
-            </>
-          )}
-
-          {/* ================= HISTORY TAB ================= */}
-          {tab === "history" && (
-
-            <div className="cards">
-
-              {historyRequests.length === 0 && (
-                <div className="empty-state">
-                  No approved visits yet
-                </div>
-              )}
-
-              {historyRequests.map((r) => (
-                <div key={r._id} className="card">
-
-                  <p><b>Visitor:</b> {r.visitor?.name}</p>
-                  <p><b>Purpose:</b> {r.purpose}</p>
-                  <p><b>Pass:</b> {r.passCode}</p>
-                  <p><b>Visit date:</b> {r.visitDate ? new Date(r.visitDate).toLocaleDateString() : "-"}</p>
-                  <p><b>Approved on:</b> {r.updatedAt ? new Date(r.updatedAt).toLocaleString() : "-"}</p>
-
-                </div>
-              ))}
-
+              <button onClick={handleExportCSV} aria-label="Export visible requests to CSV">
+                Export CSV
+              </button>
             </div>
-          )}
 
-        </div>
-      )}
+            {/* Stats */}
+            <div className="stats-row" role="region" aria-label="Request statistics">
+              <StatCard title="Total"    value={total}         />
+              <StatCard title="Pending"  value={pendingCount}  />
+              <StatCard title="Approved" value={approvedCount} />
+              <StatCard title="Rejected" value={rejectedCount} />
+            </div>
 
-      {/* ================= NOTIFICATION DRAWER ================= */}
-      {showDrawer && (
-        <div className="notify-drawer">
+            {/* Chart */}
+            <div className="card" style={{ marginBottom: 24 }}>
+              <h4 style={{ marginBottom: 10 }}>Requests overview</h4>
+              <Bar
+                data={chartData}
+                options={{ responsive: true, plugins: { legend: { display: false } } }}
+                aria-label="Bar chart showing request counts by status"
+              />
+            </div>
 
-          <div className="notify-header">
-            <b>Notifications</b>
-            <button onClick={() => setShowDrawer(false)}>✕</button>
-          </div>
+            {/* Status filter bar */}
+            <FilterBar
+              options={STATUS_FILTERS}
+              active={filter}
+              onChange={setFilter}
+              label="Filter requests by status"
+            />
 
-          <div className="notify-list">
+            {/* List */}
+            {loadingList && <SkeletonLoader count={4} />}
 
-            {notifications.length === 0 && (
-              <div className="empty-state">No notifications</div>
+            {!loadingList && filteredRequests.length === 0 && (
+              <EmptyState message="No visit requests found" />
             )}
 
-            {notifications.map((n) => (
-              <div key={n.id} className="notify-item">
-                <div>{n.text}</div>
-                <small>{n.time.toLocaleTimeString()}</small>
+            {!loadingList && filteredRequests.length > 0 && (
+              <div className="cards">
+                {filteredRequests.map((r) => (
+                  <VisitRequestCard
+                    key={r._id}
+                    request={r}
+                    expandedId={expandedId}
+                    onExpand={(id) => setExpandedId(expandedId === id ? null : id)}
+                    actions={
+                      r.status === Statuses.PENDING ? (
+                        <button
+                          onClick={() => approve(r._id)}
+                          className={loadingId === r._id ? "btn-loading" : ""}
+                          disabled={!!loadingId}
+                          aria-label={`Approve request from ${r.visitor?.name || "visitor"}`}
+                          aria-busy={loadingId === r._id}
+                        >
+                          {loadingId === r._id ? "Approving…" : "Approve"}
+                        </button>
+                      ) : null
+                    }
+                  />
+                ))}
               </div>
-            ))}
+            )}
+          </section>
+        )}
 
-          </div>
-        </div>
-      )}
+        {/* ================= HISTORY TAB ================= */}
+        {token && tab === "history" && (
+          <section aria-label="Approved visit history">
+            <h4>Approved Visit History</h4>
+            {historyRequests.length === 0 ? (
+              <EmptyState message="No approved visits yet" />
+            ) : (
+              <div className="cards">
+                {historyRequests.map((r) => (
+                  <div key={r._id} className="card">
+                    <p><b>Visitor:</b> {r.visitor?.name}</p>
+                    <p><b>Purpose:</b> {r.purpose}</p>
+                    <p><b>Pass:</b> {r.passCode}</p>
+                    <p><b>Visit date:</b> {formatDate(r.visitDate)}</p>
+                    <p><b>Approved on:</b> {formatDateTime(r.updatedAt)}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+      </DashboardLayout>
 
-      {/* ================= TOASTS ================= */}
-      <div className="toast-container">
-        {toasts.map(t => (
-          <div key={t.id} className="toast">
-            {t.text}
-          </div>
-        ))}
-      </div>
+      {/* Notification Drawer (outside layout so it overlays correctly) */}
+      <NotificationDrawer
+        isOpen={drawer.isOpen}
+        onClose={drawer.close}
+        notifications={notifications}
+      />
 
-    </div>
+      {/* Toast Stack */}
+      <ToastContainer toasts={toasts} />
+    </>
   );
 }

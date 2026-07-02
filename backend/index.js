@@ -1,40 +1,53 @@
 const express = require("express");
 const mongoose = require("mongoose");
-require("dotenv").config();
 const cors = require("cors");
 
-const authRoutes = require("./routes/auth");
-const visitorRoutes = require("./routes/visitor");
-const adminRoutes = require("./routes/admin");
+const config = require("./src/config/config");
+const apiRoutes = require("./src/routes/index");
+const healthRoute = require("./src/routes/healthRoute");
+const errorMiddleware = require("./src/middleware/errorMiddleware");
+const { requestContextMiddleware } = require("./src/middleware/requestContext");
+const standardResponseMiddleware = require("./src/middleware/standardResponse");
 
-
-// 1️⃣ Initialize app FIRST
 const app = express();
 
-// 2️⃣ Middlewares
-app.use(express.json());
-app.use(cors());
+// 1️⃣ Request correlation context and standard responses
+app.use(requestContextMiddleware);
+app.use(standardResponseMiddleware);
 
-// 3️⃣ Routes
-app.use("/api/auth", authRoutes);
-app.use("/api/visitor", visitorRoutes);
-app.use("/api/admin", adminRoutes);
+// 2️⃣ Standard payload parsers
+app.use(express.json({ limit: "100kb" }));
+app.use(cors({
+  origin: config.corsOrigin
+}));
 
-// 4️⃣ Test route
+// 3️⃣ Security headers
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  next();
+});
+
+// 4️⃣ Router Mounts
+app.use(healthRoute);
+app.use("/api/v1", apiRoutes);
+app.use("/api", apiRoutes); // Backward compatibility
+
 app.get("/", (req, res) => {
   res.send("Backend is running");
 });
 
-// 5️⃣ DB Connection
+// 5️⃣ Error Handler
+app.use(errorMiddleware);
+
+// 6️⃣ Database Connection
 mongoose
-  .connect(process.env.MONGO_URI)
+  .connect(config.mongoUri)
   .then(() => console.log("MongoDB connected"))
   .catch((err) => console.error("Mongo error:", err.message));
 
-// 6️⃣ Start server
-const PORT = process.env.PORT || 5000;
-
-app.listen(PORT, () => {
-  console.log("Server started on port", PORT);
+// 7️⃣ Server Startup
+app.listen(config.port, () => {
+  console.log("Server started on port", config.port);
 });
-
