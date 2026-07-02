@@ -1,4 +1,5 @@
 import { memo } from "react";
+import Button from "./Button";
 
 /**
  * FilterBar — a row of filter toggle buttons.
@@ -22,14 +23,14 @@ function FilterBar({ options, active, onChange, label = "Filter options" }) {
       aria-label={label}
     >
       {options.map(({ value, label: optLabel }) => (
-        <button
+        <Button
           key={value}
           className={`filter-btn${active === value ? " active" : ""}`}
           onClick={() => onChange(value)}
           aria-pressed={active === value}
         >
           {optLabel}
-        </button>
+        </Button>
       ))}
     </div>
   );

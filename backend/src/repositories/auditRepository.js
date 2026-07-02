@@ -9,7 +9,8 @@ class AuditRepository {
   async findAllPopulated() {
     return AuditLog.find()
       .populate("admin", "name email role")
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
   }
 }
 

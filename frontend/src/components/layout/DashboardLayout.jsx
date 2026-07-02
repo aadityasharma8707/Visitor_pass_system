@@ -39,6 +39,7 @@ export default function DashboardLayout({
         <h3 style={{ margin: 0 }}>{title}</h3>
         {token && (
           <button
+            type="button"
             onClick={onLogout}
             style={{ marginLeft: "auto" }}
             aria-label={`Logout from ${title}`}
@@ -57,6 +58,7 @@ export default function DashboardLayout({
           {tabs.map(({ value, label }) => (
             <button
               key={value}
+              type="button"
               className={`filter-btn${activeTab === value ? " active" : ""}`}
               onClick={() => onTabChange?.(value)}
               aria-current={activeTab === value ? "page" : undefined}
@@ -67,6 +69,7 @@ export default function DashboardLayout({
 
           {onNotificationsClick && (
             <button
+              type="button"
               style={{ marginLeft: "auto" }}
               onClick={onNotificationsClick}
               aria-label="Open notifications panel"

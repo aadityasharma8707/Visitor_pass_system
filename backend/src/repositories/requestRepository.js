@@ -14,7 +14,8 @@ class RequestRepository {
   async findPendingByHost(hostId) {
     return VisitRequest.find({ host: hostId, status: Statuses.PENDING })
       .populate("visitor")
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
   }
 
   async findApprovedWithLogs() {
@@ -24,14 +25,16 @@ class RequestRepository {
     return VisitRequest.find({ status: Statuses.APPROVED })
       .populate("visitor")
       .populate("host")
-      .sort({ visitDate: -1 });
+      .sort({ visitDate: -1 })
+      .lean();
   }
 
   async findAllPopulated() {
     return VisitRequest.find()
       .populate("visitor")
       .populate("host")
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
   }
 
   async update(id, updateData, options = {}) {

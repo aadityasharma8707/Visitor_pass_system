@@ -27,6 +27,7 @@ function NotificationDrawer({ isOpen, onClose, notifications }) {
       <div className="notify-header">
         <b>Notifications</b>
         <button
+          type="button"
           onClick={onClose}
           aria-label="Close notifications panel"
         >

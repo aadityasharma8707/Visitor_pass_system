@@ -6,7 +6,7 @@ class LogRepository {
   }
 
   async findLogsForRequests(requestIds) {
-    return EntryLog.find({ visitRequest: { $in: requestIds } });
+    return EntryLog.find({ visitRequest: { $in: requestIds } }).lean();
   }
 
   async create(logData, options = {}) {

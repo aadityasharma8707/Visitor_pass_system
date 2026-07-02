@@ -20,13 +20,14 @@ class UserRepository {
   }
 
   async findAll() {
-    return User.find().sort({ createdAt: -1 });
+    return User.find().sort({ createdAt: -1 }).lean();
   }
 
   async findHosts() {
     return User.find({ role: Roles.HOST, isSuspended: false })
       .select("name email")
-      .sort({ name: 1 });
+      .sort({ name: 1 })
+      .lean();
   }
 
   async update(id, updateData) {

@@ -3,7 +3,12 @@ import api from "../services/api";
 
 function parseJwt(token) {
   try {
-    return JSON.parse(atob(token.split(".")[1]));
+    const payload = JSON.parse(atob(token.split(".")[1]));
+    // basic expiry check (exp is seconds since epoch)
+    if (payload && payload.exp && Date.now() / 1000 > payload.exp) {
+      return null;
+    }
+    return payload;
   } catch {
     return null;
   }
@@ -26,20 +31,14 @@ export function useDashboardAuth(role, tokenKey, onLoadData) {
       }
       setToken(saved);
       if (onLoadData) {
-        onLoadData(saved);
+        // defer to next tick to avoid React state update warnings
+        Promise.resolve().then(() => onLoadData(saved));
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function logout(onLogoutClear) {
-    localStorage.removeItem(tokenKey);
-    setToken("");
-    setMsg("Logged out successfully");
-    if (onLogoutClear) {
-      onLogoutClear();
-    }
-  }
+  
 
   async function login(e, onLoginSuccess) {
     if (e) {
@@ -72,6 +71,14 @@ export function useDashboardAuth(role, tokenKey, onLoadData) {
     } finally {
       setLoading(false);
     }
+  }
+
+  // Robust logout: clear token and allow optional cleanup callback
+  function logout(onLogoutClear) {
+    localStorage.removeItem(tokenKey);
+    setToken("");
+    setMsg("Logged out successfully");
+    if (onLogoutClear) onLogoutClear();
   }
 
   return {

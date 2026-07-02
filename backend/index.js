@@ -8,33 +8,23 @@ const healthRoute = require("./src/routes/healthRoute");
 const errorMiddleware = require("./src/middleware/errorMiddleware");
 const { requestContextMiddleware } = require("./src/middleware/requestContext");
 const standardResponseMiddleware = require("./src/middleware/standardResponse");
+const helmet = require("helmet");
+const mongoose = require('mongoose');
+const config = require('./src/config/config');
+const app = require('./src/app');
 
-const app = express();
+// Health route at root for quick check
+app.get('/', (req, res) => res.send('Backend is running'));
 
-// 1️⃣ Request correlation context and standard responses
-app.use(requestContextMiddleware);
-app.use(standardResponseMiddleware);
+// Database Connection + Server Startup
+mongoose
+  .connect(config.mongoUri)
+  .then(() => console.log('MongoDB connected'))
+  .catch((err) => console.error('Mongo error:', err.message));
 
-// 2️⃣ Standard payload parsers
-app.use(express.json({ limit: "100kb" }));
-app.use(cors({
-  origin: config.corsOrigin
-}));
-
-// 3️⃣ Security headers
-app.use((req, res, next) => {
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("X-Frame-Options", "DENY");
-  res.setHeader("Referrer-Policy", "no-referrer");
-  next();
+app.listen(config.port, () => {
+  console.log('Server started on port', config.port);
 });
-
-// 4️⃣ Router Mounts
-app.use(healthRoute);
-app.use("/api/v1", apiRoutes);
-app.use("/api", apiRoutes); // Backward compatibility
-
-app.get("/", (req, res) => {
   res.send("Backend is running");
 });
 

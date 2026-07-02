@@ -1,11 +1,28 @@
 const { AsyncLocalStorage } = require("async_hooks");
-const { v4: uuidv4 } = require("uuid");
+const crypto = require('crypto');
 
 const contextStorage = new AsyncLocalStorage();
 
+function generateUuid() {
+  if (typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  try {
+    // best-effort fallback if running on older node where crypto.randomUUID
+    // isn't available. This may require the `uuid` package which can be ESM.
+    // Only attempt it as a fallback.
+    // eslint-disable-next-line global-require
+    const { v4 } = require('uuid');
+    return v4();
+  } catch (e) {
+    // Final fallback: use random bytes hex
+    return crypto.randomBytes(16).toString('hex');
+  }
+}
+
 const requestContextMiddleware = (req, res, next) => {
-  const requestId = req.headers["x-request-id"] || uuidv4();
-  const correlationId = req.headers["x-correlation-id"] || uuidv4();
+  const requestId = req.headers["x-request-id"] || generateUuid();
+  const correlationId = req.headers["x-correlation-id"] || generateUuid();
 
   // Set properties on request object
   req.requestId = requestId;

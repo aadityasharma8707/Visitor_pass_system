@@ -2,7 +2,7 @@ const Visitor = require("../models/Visitor");
 
 class VisitorRepository {
   async findByPhone(phone) {
-    return Visitor.findOne({ phone });
+    return Visitor.findOne({ phone }).lean();
   }
 
   async create(visitorData, options = {}) {

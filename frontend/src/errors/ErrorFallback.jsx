@@ -33,12 +33,14 @@ export default function ErrorFallback({ error, onReset }) {
       </p>
       <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
         <button
+          type="button"
           onClick={onReset}
           aria-label="Try to reload the failed section"
         >
           Try again
         </button>
         <button
+          type="button"
           onClick={() => (window.location.href = "/")}
           style={{
             background: "transparent",
